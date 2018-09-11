@@ -14,5 +14,5 @@ Serpstat test task
 
 aws_keys.yml:
 
-aws_access_key: ***************
-aws_secret_key: *******************************
+ aws_access_key: ***************  
+ aws_secret_key: *******************************  
