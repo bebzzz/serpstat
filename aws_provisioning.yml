@@ -1,0 +1,194 @@
+- hosts: local
+  connection: local
+  gather_facts: False
+  vars:
+    instance_type: t2.micro
+    security_group: webservers_sg
+    image: ami-00f7c900d2e7133e1
+    keypair: serpstat
+    region: us-west-2
+    count: 1
+  vars_files:
+    - aws_keys.yml
+
+  tasks:
+    - name: Create a security group
+      ec2_group:
+        name: "{{ security_group }}"
+        description: The webservers security group
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+
+
+    - name: Launch the new EC2 Instance
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        group: "{{ security_group }}"
+        instance_type: "{{ instance_type }}"
+        image: "{{ image }}"
+        wait: true 
+        region: "{{ region }}"
+        keypair: "{{ keypair }}"
+        count: "{{count}}"
+      register: ec2
+
+
+    - name: Add the newly created host so that we can further contact it
+      add_host:
+        name: "{{ item.public_ip }}"
+        groups: webservers
+      with_items: "{{ ec2.instances }}"
+
+
+    - name: Add tag to Instance(s)
+      ec2_tag:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        resource: "{{ item.id }}" 
+        region: "{{ region }}" 
+        state: "present"
+      with_items: "{{ ec2.instances }}"
+      args:
+        tags:
+          Type: webserver
+
+
+    - name: Wait for SSH to come up
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22 
+        state: started 
+      with_items: "{{ ec2.instances }}"
+
+
+- hosts: webservers
+  remote_user: centos
+  become: yes
+  gather_facts: no
+  vars:
+    root_db_password: qwerty123
+  tasks:
+    - name: Install Nginx
+      become: true
+      yum:
+        update_cache: true
+        name: nginx
+        state: present
+
+    - name: Install Redis
+      become: true
+      yum:
+        name: redis
+        state: present
+
+    - name: Starting Redis
+      become: true
+      action: service name=redis state=started
+
+    - name: Add Mysql 5.6 repo
+      become: true
+      shell: rpm -Uvh http://repo.mysql.com/mysql-community-release-el6-5.noarch.rpm
+
+    - name: Install Mysql 5.6 and additional packages
+      become: true
+      yum:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - mysql-server
+        - MySQL-python
+        - libselinux-python
+        - libsemanage-python
+    
+#    - name: Configure SELinux to start mysql on any port
+#      seboolean: name=mysql_connect_any state=true persistent=yes
+
+    - name: Start the MySQL service
+      action: service name=mysqld state=started
+
+    - name: Set root user password
+      become: true
+      become_user: root
+      mysql_user:
+        name: root
+        host: "{{ item }}"
+        password: '{{ root_db_password }}'
+        priv: "*.*:ALL,GRANT"
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+
+    - name: Copy the root credentials as .my.cnf file
+      template: src=./templates/root.cnf.j2 dest=/root/.my.cnf mode=0600
+      become: yes
+
+    
+    - name: Create PMA database user
+      become: true
+      mysql_user: 
+        name: pma
+        password: "{{ root_db_password }}"
+        priv: "*.*:ALL"
+
+    - name: Set PMA user password
+      become: true
+      become_user: root
+      mysql_user:
+        name: pma
+        host: "{{ item }}"
+        password: '{{ root_db_password }}'
+        priv: "*.*:ALL,GRANT"
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+  
+    - name: Delete anonymous MySQL server user for localhost
+      become: true
+      action: mysql_user user="" state="absent"
+
+    - name: Remove the MySQL test database
+      become: true
+      action: mysql_db db=test state=absent
+
+    - name: Update mysql root password for all root accounts
+      become: true
+      mysql_user: name=root host={{ item }} password={{ root_db_password }} priv=*.*:ALL,GRANT
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+     
+    - name: Install yum repo for PHP
+      become: true
+      yum:
+        name: centos-release-scl-rh
+        state: present
+
+
+    - name: Install PHP with modules
+      become: true
+      yum:
+        name: "{{ item }}"
+        state: present
+      with_items: 
+        - rh-php71-php-bcmath
