@@ -1,0 +1,188 @@
+- debug:
+    msg: "{{ inventory_hostname }}"
+
+- name: Install Nginx
+  become: true
+  yum:
+    update_cache: true
+    name: nginx
+    state: present
+
+- name: Install Redis
+  become: true
+  yum:
+    name: redis
+    state: present
+
+- name: Starting Redis
+  become: true
+  action: service name=redis state=started
+
+- name: Add Mysql 5.6 repo
+  become: true
+  shell: rpm -Uvh http://repo.mysql.com/mysql-community-release-el6-5.noarch.rpm
+
+- name: Install Mysql 5.6 and additional packages
+  become: true
+  yum:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - mysql-server
+    - MySQL-python
+    - libselinux-python
+    - libsemanage-python
+    - yum-utils
+    - epel-release
+
+# - name: Configure SELinux to start mysql on any port
+#   seboolean: name=mysql_connect_any state=true persistent=yes
+
+- name: Start the MySQL service
+  action: service name=mysqld state=started
+
+- name: Set root user password
+  become: true
+  become_user: root
+  mysql_user:
+    name: root
+    host: "{{ item }}"
+    password: '{{ root_db_password }}'
+    priv: "*.*:ALL,GRANT"
+  with_items:
+    - 127.0.0.1
+    - ::1
+    - localhost
+
+- name: Copy the root credentials as .my.cnf file
+  template: src=./templates/root.cnf.j2 dest=/root/.my.cnf mode=0600
+  become: yes
+
+
+- name: Create PMA database user
+  become: true
+  mysql_user: 
+    name: pma
+    password: "{{ root_db_password }}"
+    priv: "*.*:ALL"
+
+- name: Set PMA user password
+  become: true
+  become_user: root
+  mysql_user:
+    name: pma
+    host: "{{ item }}"
+    password: '{{ root_db_password }}'
+    priv: "*.*:ALL,GRANT"
+  with_items:
+    - 127.0.0.1
+    - ::1
+    - localhost
+
+- name: Delete anonymous MySQL server user for localhost
+  become: true
+  action: mysql_user user="" state="absent"
+
+- name: Remove the MySQL test database
+  become: true
+  action: mysql_db db=test state=absent
+
+- name: Update mysql root password for all root accounts
+  become: true
+  mysql_user: name=root host={{ item }} password={{ root_db_password }} priv=*.*:ALL,GRANT
+  with_items:
+    - 127.0.0.1
+    - ::1
+    - localhost
+
+- name: Install PHP7.2 
+  become: true
+  shell: rpm -Uvh http://rpms.remirepo.net/enterprise/remi-release-7.rpm && yum -y update && yum-config-manager --enable remi-php72 
+
+- name: Install PHP7.2 with addons + PHPMyAdmin
+  become: true
+  yum:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - phpmyadmin
+    - php
+    - php-opcache
+    - php-pear
+    - php-devel
+    - gcc
+    - php-fpm
+    - php-gd
+    - php-ldap
+    - php-odbc
+    - php-pdo
+    - php-pecl-memcache
+    - php-mbstring
+    - php-snmp
+    - php-soap
+    - php-xmlrpc
+
+- name: Start php-fpm
+  become: true
+  action: service name=php-fpm state=restarted 
+
+- name: Install PHP ImageMagick 
+  become: true
+  shell: yum -y install ImageMagick* && echo '' | pecl install -f Imagick && echo "extension=imagick.so" > /etc/php.d/imagick.ini
+
+- name: Install yum repo for PHP bcmath
+  become: true
+  yum:
+    name: centos-release-scl-rh
+    state: present
+
+- name: Install PHP bcmath and msyql PDO
+  become: true
+  yum:
+    name: "{{ item }}"
+    state: present
+  with_items: 
+    - php72-php-bcmath
+    - php72-php-pecl-mysql
+    - php72-php-pdo
+
+- name: Install needed dependencies for AMQP
+  become: true
+  yum:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - cmake
+    - autoconf
+    - automake
+    - librabbitmq
+    - php-devel
+    - perl-ExtUtils-PkgConfig.noarch
+    - centos-release-scl
+
+- name: Install PHP AMQP
+  become: true
+  yum: 
+    name:  php72-php-pecl-amqp
+    state: present
+
+- name: Configure PHP AMQP
+  become: true
+  shell: echo "extension=amqp.so" > /etc/php.d/amqp.ini && ln -s /opt/remi/php72/root/usr/lib64/php/modules/amqp.so /usr/lib64/php/modules/amqp.so
+
+- name: Set chown of PMA folder
+  become: true
+  shell: chown -R nginx:nginx /usr/share/phpMyAdmin
+
+- name: Copy the nginx config for PHPMyAdmin
+  template: src=./templates/pma.conf.j2 dest=/etc/nginx/conf.d/ mode=0644
+  become: yes
+
+- name: Restart Nginx and PHP-fpm
+  become: true
+  service:
+    name: "{{ item }}"
+    state: restarted
+  with_items:
+    - nginx
+    - php-fpm
