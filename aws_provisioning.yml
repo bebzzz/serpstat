@@ -5,7 +5,7 @@
     instance_type: t2.micro
     security_group: webservers_sg
     image: ami-00f7c900d2e7133e1
-    keypair: serpstat
+    keypair: lab
     region: us-west-2
     count: 1
   vars_files:
